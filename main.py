@@ -1,7 +1,6 @@
 from io import BytesIO
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
-import pretty_midi
 from typing import Dict, Any
 import uvicorn
 from pandas import Series, concat, DataFrame
