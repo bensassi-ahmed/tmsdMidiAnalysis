@@ -258,7 +258,7 @@ class TMSDMidiParser:
             en_name = en_semis[((note_number % 12) * 2) + 1] + str(note_number // 12 - 1)
         else:
             en_name = en_semis[(note_number % 12) * 2] + str(note_number // 12 - 1)
-
+        print(language)
         match language:
             case "EN":
                 return en_name
