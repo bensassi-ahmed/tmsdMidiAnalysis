@@ -6,6 +6,7 @@ import uvicorn
 from pandas import Series, concat, DataFrame
 from pretty_midi import PrettyMIDI
 from itertools import islice
+from fastapi.middleware.cors import CORSMiddleware
 
 # Dictionary mapping duration names in different languages
 DURATION_NAMES = {
@@ -648,10 +649,21 @@ class Analyzer:
         return results_dict
 
 
+
 app = FastAPI(
     title="MIDI Analysis API",
     description="API for analyzing MIDI files and extracting musical metrics",
     version="1.0.0",
+)
+
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://midi-harmony-explorer.lovable.app"],
+    allow_credentials=True,
+    allow_methods=["POST"],
+    allow_headers=["*"],
 )
 
 
