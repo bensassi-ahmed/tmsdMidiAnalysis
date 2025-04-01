@@ -679,7 +679,7 @@ app.add_middleware(
     }
 )
 async def analyze_midi(
-        midi_file: UploadFile = File(
+        file: UploadFile = File(
             ...,
             description="MIDI file to analyze (supported formats: .mid, .midi)",
             max_size=10_000_000,  # 10MB limit
@@ -699,11 +699,11 @@ async def analyze_midi(
     """
     try:
         # Validate file type
-        if not midi_file.filename.lower().endswith(('.mid', '.midi')):
+        if not file.filename.lower().endswith(('.mid', '.midi')):
             raise ValueError("Invalid file format. Only MIDI files are accepted.")
 
         # Read and process file
-        file_content = await midi_file.read()
+        file_content = await file.read()
         midi_received = BytesIO(file_content)
 
         # Run analysis
