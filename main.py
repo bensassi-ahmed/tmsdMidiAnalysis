@@ -707,7 +707,7 @@ async def analyze_midi(
         midi_received = BytesIO(file_content)
 
         # Run analysis
-        analyzer_instance = Analyzer(midi_received, 'EN')
+        analyzer_instance = Analyzer(midi_received, 'FR')
         analysis_result = analyzer_instance.analyzer()
 
         return JSONResponse(
