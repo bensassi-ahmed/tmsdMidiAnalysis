@@ -3,650 +3,440 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Dict, Any
 import uvicorn
-from pandas import Series, concat, DataFrame
-from pretty_midi import PrettyMIDI
-from itertools import islice
 from fastapi.middleware.cors import CORSMiddleware
+import pretty_midi
+import pandas as pd
+import bisect
+from fractions import Fraction
+import warnings
 
-# Dictionary mapping duration names in different languages
-DURATION_NAMES = {
-    'EN': ["whole(..)",
-           "whole(.)",
-           "whole",
-           "half(..)",
-           "half(.)",
-           "half",
-           "quarter(..)",
-           "quarter(.)",
-           "quarter",
-           "eighth(..)",
-           "eighth(.)",
-           "eighth",
-           "sixteenth(..)",
-           "sixteenth(.)",
-           "sixteenth",
-           "thirty-second(..)",
-           "thirty-second(.)",
-           "thirty-second",
-           "sixty-fourth(..)",
-           "sixty-fourth(.)",
-           "sixty-fourth"],
+FRENCH_PITCH_CLASSES = [
+    'Do', 'Do#', 'Ré', 'Ré#', 'Mi', 'Fa',
+    'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si'
+]
 
-    'FR': ["ronde(..)",
-           "ronde(.)",
-           "ronde",
-           "blanche(..)",
-           "blanche(.)",
-           "blanche",
-           "noire(..)",
-           "noire(.)",
-           "noire",
-           "croche(..)",
-           "croche(.)",
-           "croche",
-           "double-croche(..)",
-           "double-croche(.)",
-           "double-croche",
-           "triple-croche(..)",
-           "triple-croche(.)",
-           "triple-croche",
-           "quadruple-croche(..)",
-           "quadruple-croche(.)",
-           "quadruple-croche"],
+BEAT_VALUES = [
+    8,
+    7,
+    6,
+    4,
+    3.5,
+    3,
+    2,
+    1.75,
+    1.5,
+    1,
+    0.875,
+    0.75,
+    0.5,
+    0.4375,
+    0.375,
+    0.25,
+    0.21875,
+    0.1875,
+    0.125,
+    0.109375,
+    0.09375,
+    0.0625,
+    float(Fraction(4, 3)),  # Whole-note triplet (3 in 4 beats)
+    float(Fraction(2, 3)),  # Quarter-note triplet (3 in 2 beats)
+    float(Fraction(1, 3)),  # Eighth-note triplet (3 in 1 beat)
+    float(Fraction(1, 6)),  # 16th-note triplet (3 in 0.5 beats)
+    float(Fraction(1, 12)),  # 32nd-note triplet (3 in 0.25 beats)
+    float(Fraction(2, 3) * 1.5),  # Dotted quarter triplet
+    float(Fraction(1, 3) * 1.5),  # Dotted eighth triplet
+]
 
-    'AR': ["مستديرة(..)",
-           "مستديرة(.)",
-           "مستديرة",
-           "بيضاء(..)",
-           "بيضاء(.)",
-           "بيضاء",
-           "سوداء(..)",
-           "سوداء(.)",
-           "سوداء",
-           "مشالة(..)",
-           "مشالة(.)",
-           "مشالة",
-           "2 شيلات(..)",
-           "2 شيلات(.)",
-           "2 شيلات",
-           "3 شيلات(..)",
-           "3 شيلات(.)",
-           "3 شيلات",
-           "4 شيلات(..)",
-           "4 شيلات(.)",
-           "4 شيلات"]
-}
 
-# Dictionary mapping pitch names in different languages
-PITCH_NAMES = {
-    'EN': ["C", "C>", "C#", "D<", "D", "D>", "D#", "E<", "E", "E>", "F", "F>",
-           "F#", "G<", "G", "G>", "G#", "A<", "A", "A>", "A#", "B<", "B", "B>"],
-    'FR': ["do", "do>", "do#", "re<", "re", "re>", "re#", "mi<", "mi", "mi>", "fa", "fa>",
-           "fa#", "sol<", "sol", "sol>", "sol#", "la<", "la", "la>", "la#", "si<", "si", "si>"],
-    'AR': {
-        "G3": "يك-كاه",
-        "G>3": "تيك يك-كاه",
-        "G#3": "قرار حصار",
-        "A<3": "نيم عشيران",
-        "A3": "عشيران",
-        "A>3": "نيم عجم عشيران",
-        "A#3": "نيم عراق",
-        "B<3": "عراق",
-        "B3": "كواشت",
-        "B>3": "تيك كواشت",
-        "C4": "راست",
-        "C>4": "تيك راست",
-        "C#4": "زير كوله",
-        "D<4": "تيك زير كوله",
-        "D4": "دو–كاه",
-        "D>4": "تيك دو-كاه",
-        "D#4": "كردى حجاز",
-        "E<4": "سه–كاه",
-        "E4": "بوسلك",
-        "E>4": "تيك بوسلك",
-        "F4": "تشهار–كاه",
-        "F>4": "تيك تشهار–كاه",
-        "F#4": "حجاز",
-        "G<4": "عزال",
-        "G4": "نوى",
-        "G>4": "تيك نوى",
-        "G#4": "حصار",
-        "A<4": "نيم حسينى",
-        "A4": "حسينى",
-        "A>4": "نيم عجم",
-        "A#4": "نيم اوج",
-        "B<4": "اوج",
-        "B4": "ماهور",
-        "B>4": "تيك ماهور",
-        "C5": "كردان",
-        "C>5": "تيك كردان",
-        "C#5": "جواب زير كوله",
-        "D<5": "جواب تيك زير كوله",
-        "D5": "محير",
-        "D>5": "تيك محير",
-        "D#5": "سنبله حجاز",
-        "E<5": "بزرك",
-        "E5": "جواب بوسلك",
-        "E>5": "جواب تيك بوسلك",
-        "F5": "ماهوران",
-        "F>5": "تيك ماهوران",
-        "F#5": "جواب حجاز",
-        "G<5": "جواب عزال",
-        "G5": "سهم"
-    }
-}
+def get_french_pitch_name(midi_number: int) -> str:
+    """Convert MIDI number to French pitch name with octave."""
+    if not (0 <= midi_number <= 127):
+        raise ValueError(f"Invalid MIDI number: {midi_number}. Must be 0-127.")
+    octave = (midi_number // 12) - 1
+    return f"{FRENCH_PITCH_CLASSES[midi_number % 12]}{octave}"
 
-# Dictionary mapping columns names in different languages
-COLUMNS_LANGUAGE = {
-    "EN": {
-        "analyze_pitches": ["Pitches", "Occurrence", "%_Occ", "Duration", "%_Dur", "Mean Duration"],
-        "internal_final": ["Internal Finals", "Occurrence"],
-        "melodic_peaks": ["Pitch", "Upper Peak", "Lower Peak"],
-        "pitch_transition_matrix": ["Pitch 1", "Pitch 2"],
-        "duration_transition_matrix": ["Duration 1", "Duration 2"],
-        "interval_count": ["Interval", "Occurrence"],
-        "interval_transition_matrix": ["Interval 1", "Interval 2"]
-    },
-    "FR": {
-        "analyze_pitches": ["Notes", "Occurence", "%_Occ", "Durée", "%_Dur", "Durée Moyenne"],
-        "internal_final": ["Finale Interne", "Occurence"],
-        "melodic_peaks": ["Note", "Pic Supérieur", "Pic Inférieur"],
-        "pitch_transition_matrix": ["Note 1", "Note 2"],
-        "duration_transition_matrix": ["Durée 1", "Durée 2"],
-        "interval_count": ["Intervalle", "Occurence"],
-        "interval_transition_matrix": ["Intervalle 1", "Intervalle 2"]
-    },
-    "AR": {
-        "analyze_pitches": ["الدرجة", "التواتر", "% التواتر", "المدّة", "% المدّة", "متوسط المدّة"],
-        "internal_final": ["ارتكاز داخلي", "التواتر"],
-        "melodic_peaks": ["الدرجة", "القمة العليا", "الذروة السفلية"],
-        "pitch_transition_matrix": ["الدرجة 1", "الدرجة 2"],
-        "duration_transition_matrix": ["المدّة 1", "المدّة 2"],
-        "interval_count": ["البعد", "التواتر"],
-        "interval_transition_matrix": ["البعد 1", "البعد 2"]
-    }
-}
 
-def window(seq, n=2):
-    it = iter(seq)
-    result = tuple(islice(it, n))
-    if len(result) == n:
-        yield result
-    for elem in it:
-        result = result[1:] + (elem,)
-        yield result
+def adjust_pitch_name(french_name: str, midi_number: int, bend: int) -> str:
+    """Adjust pitch name based on bend value."""
+    if bend <= 1024:
+        return french_name
 
-class TMSDMidiParser:
-    """
-    class to read a midi file from a path
-    and convert it content to a dataframe
-    """
-    @staticmethod
-    def quantize_duration(duration, durations_list):
-        """
-            Quantize a duration value to the closest value from the durations list.
-
-            Args:
-                duration (float): The duration value to be quantized.
-                durations_list (list): List of durations to compare with.
-
-            Returns:
-                float: The quantized duration value.
-            """
-
-        for i, dur in enumerate(durations_list):
-            if duration > dur:
-                return durations_list[i - 1]
-            if duration == dur:
-                return durations_list[i]
-
-    @staticmethod
-    def get_duration_list(tempo):
-        """
-            Generates a list of durations based on the given tempo.
-
-            Args:
-                tempo (int): The tempo value.
-
-            Returns:
-                list: List of durations.
-            """
-
-        qnd = 60_000_000 / (tempo * 1000000)  # quarter_note_duration
-
-        durations = [
-            7 * qnd,
-            6 * qnd,
-            4 * qnd,
-            3.5 * qnd,
-            3 * qnd,
-            2 * qnd,
-            1.75 * qnd,
-            1.5 * qnd,
-            qnd,
-            0.875 * qnd,
-            0.75 * qnd,
-            0.5 * qnd,
-            0.4375 * qnd,
-            0.375 * qnd,
-            0.25 * qnd,
-            0.21875 * qnd,
-            0.1875 * qnd,
-            0.125 * qnd,
-            0.109375 * qnd,
-            0.09375 * qnd,
-            0.0625 * qnd
-        ]
-        return durations
-
-    @staticmethod
-    def get_pitch_name(pitch_number, pitch_bend, language):
-        """
-            Retrieves the pitch name based on the pitch number, pitch bend, and language.
-
-            Args:
-                pitch_number (int): The MIDI pitch number.
-                pitch_bend (int): The pitch bend value.
-                language (str): The language code.
-
-            Returns:
-                str: The pitch name.
-            """
-
-        note_number = int(round(pitch_number))
-        en_semis = PITCH_NAMES['EN']
-        if pitch_bend != 0:
-            en_name = en_semis[((note_number % 12) * 2) + 1] + str(note_number // 12 - 1)
-        else:
-            en_name = en_semis[(note_number % 12) * 2] + str(note_number // 12 - 1)
-        match language:
-            case "EN":
-                return en_name
-            case "FR":
-                return PITCH_NAMES['FR'][en_semis.index(en_name[:-1])] + en_name[-1]
-            case "AR":
-                if pitch_number < 55 or pitch_number > 79:
-                    return en_name
-                else:
-                    return PITCH_NAMES['AR'][en_name]
-
-    @staticmethod
-    def get_duration_name(q_dur, durations_list, language):
-        """
-            Retrieves the duration name based on the quantized duration, durations list, and language.
-
-            Args:
-                q_dur (float): The quantized duration value.
-                durations_list (list): List of durations.
-                language (str): The language code.
-
-            Returns:
-                str: The duration name.
-            """
-
-        duration_index = durations_list.index(q_dur)
-        match language:
-            case "EN":
-                return DURATION_NAMES["EN"][duration_index]
-            case "FR":
-                return DURATION_NAMES["FR"][duration_index]
-            case "AR":
-                return DURATION_NAMES["AR"][duration_index]
-
-    def parse_midi_file(self, midi_file_path, language):
-        """
-            Parses a MIDI file and returns the data as a DataFrame.
-
-            Args:
-                midi_file_path (str): The path to the MIDI file.
-                language (str): The language code.
-
-            Returns:
-                pandas.DataFrame: The parsed MIDI data as a DataFrame.
-            """
-
-        midi_data = PrettyMIDI(midi_file_path)
-        data = []
-
-        instrument = midi_data.instruments[0]
-        tempo = round(midi_data.get_tempo_changes()[1][0])
-        durations_list = self.get_duration_list(tempo)
-        smallest_duration = durations_list[-1]
-        prev_end_time = 0.0
-
-        for note in instrument.notes:
-            start = note.start
-            end = note.end
-            pitch_bend = 0
-            dur = round(end - start, 6)
-            pitch_code = note.pitch
-
-            q_dur = self.quantize_duration(dur, durations_list)
-            duration_name = self.get_duration_name(q_dur, durations_list, language)
-
-            end = start + q_dur
-
-            for bend in instrument.pitch_bends:
-                if bend.time == note.start and bend.pitch > 10:
-                    pitch_bend = 2048
-                    pitch_code += 0.5
-
-            if start - prev_end_time >= smallest_duration:
-                rest_duration = self.quantize_duration(start - prev_end_time, durations_list)
-                rest_dur_name = self.get_duration_name(rest_duration, durations_list, language)
-                data.append([prev_end_time, start, '*', rest_duration, '*', '*', rest_dur_name])
-
-            pitch = self.get_pitch_name(note.pitch, pitch_bend, language)
-
-            data.append([start, end, pitch, q_dur, pitch_bend, pitch_code, duration_name])
-            prev_end_time = end
-
-        midi_list = sorted(data, key=lambda x: x[0])
-
-        data_frame = DataFrame(midi_list, columns=['Start', 'End', 'Pitch', 'Duration', 'Bend', 'Code', 'Dur_Name'])
-
-        return data_frame
-
-class Analyzer:
-    """
-    class to read a dataframe containing converted midi file
-    and compute musical information and returns a dictionary
-    """
-    def __init__(self, midi_file, language):
-
-        # Read the MIDI file into a DataFrame
-        parser_instance = TMSDMidiParser()
-        self.midi_df = parser_instance.parse_midi_file(midi_file, language)
-        self.language = language
-
-    def analyze_pitches(self):
-        """
-        Analyze the pitch information in a MIDI file.
-
-        Args:
-            midi_df (pandas.DataFrame): A pandas DataFrame with the MIDI data, containing at least the columns "Pitch"
-        and "Duration".
-
-        Returns:
-            str: A JSON string representing a pandas DataFrame with the analysis results, containing columns for the
-        pitches, their occurrences, their percentage of total occurrences, their durations, their percentage of total
-        duration, and their average duration.
-
-        """
-        midi_df = self.midi_df
-
-        # create a new DataFrame to store the analysis results
-        pitches = DataFrame(
-            columns=["Pitches", "Occurrence", "%_Occ", "Duration", "%_Dur", "Mean Duration"]
+    # Validate french_name format
+    if not french_name or len(french_name) < 2 or not french_name[-1].isdigit():
+        raise ValueError(
+            f"Invalid french_name '{french_name}' for MIDI number {midi_number}"
         )
 
-        # count the number of occurrences for each note and store them in the new DataFrame
-        val_count_haut = midi_df.Pitch.value_counts()
-        pitches["Pitches"] = val_count_haut.index
-        pitches["Occurrence"] = val_count_haut.values
+    base_name = french_name[:-1]
+    octave = french_name[-1]
 
-        # calculate the percentage of total occurrences for each note and store it in the new DataFrame
-        pitches["%_Occ"] = (
-                100 * midi_df.Pitch.value_counts(normalize=True).values
-        )
+    if '#' not in base_name:
+        return f"{base_name}>{octave}"
+    else:
+        next_pitch_index = (midi_number % 12 + 1) % 12
+        next_pitch = FRENCH_PITCH_CLASSES[next_pitch_index]
+        return f"{next_pitch}<{octave}"
 
-        # calculate the total duration for each note and store it in the new DataFrame
-        duree = midi_df.Duration.groupby(midi_df.Pitch).sum()
-        for i, v in duree.items():
-            pitches.loc[pitches.index[pitches["Pitches"] == i], ["Duration"]] = v
 
-        # calculate the percentage of total duration for each note and store it in the new DataFrame
-        pitches["%_Dur"] = 100 * (pitches["Duration"] / pitches["Duration"].sum())
+def parse_midi_file(midi_path: str) -> pd.DataFrame:
+    """Extract quantized notes and rests from MIDI file."""
+    try:
+        midi_data = pretty_midi.PrettyMIDI(midi_path)
+    except Exception as e:
+        raise ValueError(f"Failed to load MIDI file: {e}") from e
 
-        # calculate the average duration for each note and store it in the new DataFrame
-        pitches["Mean Duration"] = pitches["Duration"] / pitches["Occurrence"]
+    # Check for valid instruments
+    if not midi_data.instruments:
+        warnings.warn("MIDI file contains no instruments.", UserWarning)
+        return pd.DataFrame(columns=["pitch_name", "pitch_code", "duration"])
 
-        # return the analysis results as a JSON string in the format of a pandas DataFrame
-        return pitches.to_json(orient="split")
+    # Tempo handling
+    tempo_changes, tempi = midi_data.get_tempo_changes()
+    if tempi.any():
+        tempo = tempi[0]
+        if tempo <= 0:
+            raise ValueError(f"Invalid tempo {tempo}. Tempo must be positive.")
+    else:
+        tempo = 120.0
+    beat_duration = 60.0 / tempo
 
-    def internal_final(self):
-        """
-        This function takes in a dataframe of pitch data for a midi file, and returns a JSON string of the count
-        of internal final pitches in the piece of music.
+    possible_durations = sorted([v * beat_duration for v in BEAT_VALUES])
+    if not possible_durations:
+        raise ValueError("No valid durations calculated. Check BEAT_VALUES and tempo.")
 
-        Args:
-            pitches_df (pandas.DataFrame): A dataframe of pitch data for a midi file.
+    timeline = []
+    drum_instruments = 0
 
-        Returns:
-            A JSON string of the count of internal final pitches in the piece of music.
+    for instrument in midi_data.instruments:
+        try:
+            if instrument.is_drum:
+                drum_instruments += 1
+                continue
 
-        """
-        midi_df = self.midi_df
-        fin_list = []
-
-        for i, pitches in midi_df.iloc[1:, :].iterrows():
-            if pitches["Pitch"] == "*":
-                if midi_df["Pitch"].iat[i - 1] != "*":
-                    fin_list.append(midi_df["Pitch"].iat[i - 1])
-
-        fin_int = DataFrame(Series(fin_list).value_counts())
-        fin_int = fin_int.reset_index()
-        fin_int = fin_int.rename(columns={"index": "Internal Finals", 0: "Occurrence"})
-
-        return fin_int.to_json(orient="split")
-
-    def melodic_peaks(self):
-        """
-        This function takes a MIDI file in DataFrame format as input and identifies the melodic peaks of the song.
-
-        Args:
-            midi_df (pandas.DataFrame): a DataFrame containing MIDI data with columns 'Pitch', 'Velocity', 'Time' and
-        'Duration'.
-
-        Returns:
-            pandas.DataFrame: a DataFrame containing the melodic peaks of the song with columns 'Pitch', 'Upper Peak'
-        and 'Lower Peak'.
-
-        """
-        midi_df = self.midi_df
-
-        # Select only pitches (rows) that are not marked with a *
-        song = midi_df[midi_df.Pitch != "*"]
-
-        # Reset the index of the DataFrame after removing the rows marked with *
-        song = song.reset_index()
-
-        # Drop the index column
-        song = song.drop(["index"], axis=1)
-
-        # Create an empty DataFrame to hold the melodic peaks
-        melo_peak = DataFrame(columns=["Pitch", "Upper Peak", "Lower Peak"])
-
-        # Loop through each row of the song DataFrame to identify the melodic peaks
-        for i, pitches in song.iloc[1:-1, :].iterrows():
-            # Calculate the superior peak (note is higher than the surrounding pitches)
-            if (song["Code"].iat[i] > song["Code"].iat[i - 1]) and (
-                    song["Code"].iat[i] > song["Code"].iat[i + 1]
-            ):
-                # If the note is not already in the DataFrame, add it with one superior peak
-                if song["Pitch"].iat[i] not in melo_peak["Pitch"].values:
-                    new_row = DataFrame(
-                        {
-                            "Pitch": song["Pitch"].iat[i],
-                            "Upper Peak": [1],
-                            "Lower Peak": [0],
-                        }
+            for note in instrument.notes:
+                # Validate note timing
+                if note.end <= note.start:
+                    warnings.warn(
+                        f"Note end {note.end} <= start {note.start}. Skipping.",
+                        UserWarning
                     )
-                    melo_peak = concat([melo_peak, new_row], ignore_index=True)
+                    continue
 
-                # If the note is already in the DataFrame, increment its superior peak count
-                else:
-                    index = melo_peak.index[
-                        melo_peak["Pitch"].values == song["Pitch"].iat[i]
-                        ][0]
-                    melo_peak.loc[index, ["Upper Peak"]] = [
-                        melo_peak["Upper Peak"].iat[index] + 1
-                    ]
+                # Calculate original duration
+                original_duration = note.end - note.start
 
-            # Calculate the inferior peak (note is lower than the surrounding pitches)
-            elif (song["Code"].iat[i] < song["Code"].iat[i - 1]) and (
-                    song["Code"].iat[i] < song["Code"].iat[i + 1]
-            ):
-                # If the note is not already in the DataFrame, add it with one inferior peak
-                if song["Pitch"].iat[i] not in melo_peak["Pitch"].values:
-                    new_row = DataFrame(
-                        {
-                            "Pitch": song["Pitch"].iat[i],
-                            "Upper Peak": [0],
-                            "Lower Peak": [1],
-                        }
-                    )
+                # Get pitch info with validation
+                try:
+                    french_name = get_french_pitch_name(note.pitch)
+                except ValueError as e:
+                    warnings.warn(f"Skipping note: {e}", UserWarning)
+                    continue
 
-                    melo_peak = concat([melo_peak, new_row], ignore_index=True)
+                # Get pitch bend (0 if none found)
+                pitch_bend = next(
+                    (b.pitch for b in instrument.pitch_bends
+                     if abs(b.time - note.start) < 0.01),
+                    0
+                )
 
-                # If the note is already in the DataFrame, increment its inferior peak count
-                else:
-                    index = melo_peak.index[
-                        melo_peak["Pitch"].values == song["Pitch"].iat[i]
-                        ][0]
-                    melo_peak.loc[index, ["Lower Peak"]] = [
-                        melo_peak["Lower Peak"].iat[index] + 1
-                    ]
+                # Adjust pitch name with validation
+                try:
+                    final_name = adjust_pitch_name(french_name, note.pitch, pitch_bend)
+                except ValueError as e:
+                    warnings.warn(f"Skipping note: {e}", UserWarning)
+                    continue
 
-        # Return the DataFrame containing the melodic peaks of the song
-        return melo_peak.to_json(orient="split")
+                adjusted_pitch = note.pitch + (0.5 if pitch_bend > 1024 else 0)
 
-    def transition_matrix(self):
-        """
-        Calculates the transition matrices for pitches and durations of a MIDI file.
+                # Quantize duration
+                index = bisect.bisect_left(possible_durations, original_duration)
+                quant_duration = (
+                    possible_durations[index]
+                    if index < len(possible_durations)
+                    else possible_durations[-1]
+                )
 
-        Args:
-            midi_df (pandas.DataFrame): A pandas DataFrame containing MIDI data, with columns for 'Pitch' and 'Duration'.
+                timeline.append({
+                    'type': 'note',
+                    'time': note.start,
+                    'end': note.start + quant_duration,
+                    'pitch_name': final_name,
+                    'pitch_code': adjusted_pitch,
+                    'duration': quant_duration
+                })
 
-        Returns:
-            Tuple: A tuple containing two pandas DataFrames in JSON format representing the transition matrices for pitches
-            and durations respectively.
+        except Exception as e:
+            warnings.warn(f"Error processing instrument: {e}", UserWarning)
+            continue
 
-        """
-        midi_df = self.midi_df
+    # Check if all instruments were drums
+    if drum_instruments == len(midi_data.instruments):
+        warnings.warn("All instruments are drums. No notes extracted.", UserWarning)
+        return pd.DataFrame(columns=["pitch_name", "pitch_code", "duration"])
 
-        # Get the list of pitches and durations from the MIDI file
-        pitches = midi_df.Pitch.tolist()
-        durations = midi_df.Dur_Name.tolist()
+    timeline.sort(key=lambda x: x['time'])
+    processed_events = []
+    previous_end = 0.0
 
-        # Calculate the transition matrix for pitches
-        # Convert the pitches list into a DataFrame with sliding windows of two consecutive pitches
-        pairs = DataFrame(window(pitches), columns=["Pitch 1", "Pitch 2"])
-        # Count the occurrences of each pair of consecutive pitches and group by the first note in the pair
-        counts = pairs.groupby("Pitch 1")["Pitch 2"].value_counts()
-        # Calculate the probabilities of transitioning from each note to each other note
-        probs = (round(counts / counts.sum(), 3) * 100).unstack()
-        # Convert the resulting DataFrame into a matrix where rows
-        # represent starting pitches and columns represent ending
-        # pitches
-        DF_probs = DataFrame(probs)
-        pitches_tm_df = DF_probs.fillna(0)
+    for event in timeline:
+        # Handle rests between previous end and current event
+        if event['time'] > previous_end:
+            rest_duration = event['time'] - previous_end
+            index = bisect.bisect_left(possible_durations, rest_duration)
+            quant_rest = (
+                possible_durations[index]
+                if index < len(possible_durations)
+                else possible_durations[-1]
+            )
+            if quant_rest > 0:
+                processed_events.append({
+                    'pitch_name': '*',
+                    'pitch_code': 0,
+                    'duration': quant_rest
+                })
 
-        # Calculate the transition matrix for durations
-        # Convert the durations list into a DataFrame with sliding windows of two consecutive durations
-        pairs = DataFrame(window(durations), columns=["Duration 1", "Duration 2"])
-        # Count the occurrences of each pair of consecutive durations and group by the first duration in the pair
-        counts = pairs.groupby("Duration 1")["Duration 2"].value_counts()
-        # Calculate the probabilities of transitioning from each duration to each other duration
-        probs = (round(counts / counts.sum(), 3) * 100).unstack()
-        # Convert the resulting DataFrame into a matrix where rows represent starting durations and columns represent
-        # ending durations
-        DF_probs = DataFrame(probs)
-        duration_tm_df = DF_probs.fillna(0)
+        # Add the quantized note
+        processed_events.append({
+            'pitch_name': event['pitch_name'],
+            'pitch_code': event['pitch_code'],
+            'duration': event['duration']
+        })
+        previous_end = max(previous_end, event['end'])
 
-        # Return the transition matrices as a tuple of pandas DataFrames in JSON format
-        return pitches_tm_df.to_json(orient="split"), duration_tm_df.to_json(
-            orient="split"
+    return pd.DataFrame(processed_events, columns=["pitch_name", "pitch_code", "duration"])
+
+
+def pitch_statistics(df):
+    # Calculate total metrics
+    total_occurrences = len(df)
+    total_duration = df['duration'].sum()
+
+    # Group by pitch name and calculate statistics
+    grouped = df.groupby('pitch_name', as_index=False).agg(
+        occurrence=('duration', 'count'),
+        total_duration=('duration', 'sum'),
+        mean_duration=('duration', 'mean')
+    )
+
+    # Calculate percentages
+    grouped['occurrence %'] = (grouped['occurrence'] / total_occurrences) * 100
+    grouped['duration %'] = (grouped['total_duration'] / total_duration) * 100
+
+    # Sort by occurrence descending
+    grouped = grouped.sort_values('occurrence', ascending=False)
+
+    # Reorder columns to match desired output
+    result = grouped[['pitch_name', 'occurrence', 'occurrence %',
+                      'total_duration', 'duration %', 'mean_duration']]
+
+    return result
+
+
+def internal_finals(df):
+    # Find all rest positions
+    rests = df[df['pitch_name'] == '*'].index
+
+    # Collect preceding notes (internal finals)
+    finals = []
+    for idx in rests:
+        if idx > 0:  # Ensure there's a preceding note
+            finals.append(df.iloc[idx - 1]['pitch_name'])
+
+    # Create result dataframe
+    if finals:
+        result = pd.DataFrame(finals, columns=['pitch_name']) \
+            .value_counts().reset_index(name='occurrence')
+    else:
+        result = pd.DataFrame(columns=['pitch_name', 'occurrence'])
+
+    return result
+
+
+def melodic_peaks(df):
+    # Filter out rests and create working copy
+    notes_df = df[df['pitch_name'] != '*'].reset_index(drop=True)
+
+    peaks = []
+    troughs = []
+
+    # Need at least 3 notes to identify peaks/troughs
+    if len(notes_df) < 3:
+        return pd.DataFrame(columns=['pitch_name', 'type', 'count'])
+
+    # Check each middle note for peak/trough status
+    for i in range(1, len(notes_df) - 1):
+        current = notes_df.at[i, 'pitch_code']
+        prev = notes_df.at[i - 1, 'pitch_code']
+        next_ = notes_df.at[i + 1, 'pitch_code']
+
+        if current > prev and current > next_:
+            peaks.append(notes_df.at[i, 'pitch_name'])
+        elif current < prev and current < next_:
+            troughs.append(notes_df.at[i, 'pitch_name'])
+
+    # Create result dataframes
+    peak_counts = pd.Series(peaks).value_counts().reset_index()
+    peak_counts.columns = ['pitch_name', 'ascending_peaks']
+
+    trough_counts = pd.Series(troughs).value_counts().reset_index()
+    trough_counts.columns = ['pitch_name', 'descending_peaks']
+
+    # Merge results
+    result = pd.merge(peak_counts, trough_counts, on='pitch_name', how='outer').fillna(0)
+
+    # Add total peaks column and sort
+    result['total_extremes'] = result['ascending_peaks'] + result['descending_peaks']
+    result = result.sort_values('total_extremes', ascending=False).drop('total_extremes', axis=1)
+
+    return result
+
+
+def pitch_transition_matrix(df):
+    # Create list of all transitions
+    transitions = []
+    for i in range(len(df) - 1):
+        current = df.loc[i, 'pitch_name']
+        next_pitch = df.loc[i + 1, 'pitch_name']
+        transitions.append((current, next_pitch))
+
+    # Create matrix using crosstab
+    if transitions:
+        from_pitches, to_pitches = zip(*transitions)
+        matrix = pd.crosstab(
+            pd.Categorical(from_pitches, categories=df['pitch_name'].unique()),
+            pd.Categorical(to_pitches, categories=df['pitch_name'].unique()),
+            dropna=False
         )
+    else:
+        matrix = pd.DataFrame()
 
-    def intervals(self):
-        """
-        This function computes the intervals between consecutive pitches in the MIDI file and returns a dataframe
-        with the count of each interval, as well as a transition matrix of interval probabilities.
+    # Add row/column labels
+    matrix.index.name = "de"
+    matrix.columns.name = "vers"
 
-        Args:
-            midi_df (pandas.DataFrame): Dataframe containing the MIDI data, with columns for Pitch, Code, and Duration.
+    return matrix
 
-        Returns:
-            tuple: A tuple containing two JSON-formatted strings representing the interval count dataframe
-            and the interval transition matrix dataframe, respectively.
 
-        """
-        midi_df = self.midi_df
+def duration_transition_matrix(df):
+    # Get list of durations (including rests)
+    durations = df['duration'].tolist()
 
-        # Get the list of codes from the MIDI dataframe
-        codes = midi_df[midi_df.Code != "*"].Code.tolist()
+    # Create transition pairs
+    transitions = []
+    for i in range(len(durations) - 1):
+        current = durations[i]
+        next_dur = durations[i + 1]
+        transitions.append((current, next_dur))
 
-        # Compute the intervals between consecutive pitches
-        int_list = []
-        for i in range(len(codes) - 1):
-            int_list.append(codes[i + 1]-codes[i])
+    # Create matrix using all unique durations as categories
+    if transitions:
+        unique_durs = sorted(df['duration'].unique())
+        from_durs, to_durs = zip(*transitions)
 
-        # Count the occurrences of each interval
-        intervals = DataFrame(int_list).value_counts()
-        intervals_df = DataFrame(intervals)
-
-        # Compute the transition matrix of interval probabilities
-        pairs = DataFrame(window(int_list), columns=["Interval 1", "Interval 2"])
-        counts = pairs.groupby("Interval 1")["Interval 2"].value_counts()
-        probs = (round(counts / counts.sum(), 3) * 100).unstack()
-        DF_probs = DataFrame(probs)
-        intervals_tm_df = DF_probs.fillna(0)
-
-        # Return the interval count and transition matrix dataframes as JSON-formatted strings
-        return intervals_df.to_json(orient="split"), intervals_tm_df.to_json(
-            orient="split"
+        matrix = pd.crosstab(
+            pd.Categorical(from_durs, categories=unique_durs),
+            pd.Categorical(to_durs, categories=unique_durs),
+            dropna=False
         )
+    else:
+        matrix = pd.DataFrame()
 
-    def analyzer(self):
-        """
-        Analyzes the MIDI file and returns a dictionary of analysis results.
+    # Add labels and sort
+    matrix.index.name = "de"
+    matrix.columns.name = "vers"
+    matrix = matrix.sort_index(axis=0).sort_index(axis=1)
 
-        Returns:
-            a dictionary containing the following keys:
-            "pitch_table": a table of pitch occurrences in the MIDI file,
-            "if_table": a table of internal and final intervals in the MIDI file,
-            "mp_table": a table of melodic peaks in the MIDI file,
-            "pitch_tm": a transition matrix of pitches in the MIDI file,
-            "duration_tm": a transition matrix of note durations in the MIDI file,
-            "int_table": a table of all intervals in the MIDI file,
-            "int_tm": a transition matrix of intervals in the MIDI file
-        """
-        results_dict = {
-            "pitch_table": "",
-            "if_table": "",
-            "mp_table": "",
-            "pitch_tm": "",
-            "duration_tm": "",
-            "int_table": "",
-            "int_tm": "",
-        }
+    return matrix
 
-        # Generate pitch occurrence table
-        pitch_table = self.analyze_pitches()
 
-        # Generate internal and final interval table
-        if_table = self.internal_final()
+def intervals_statistics(df):
+    intervals = []
 
-        # Generate melodic peaks table
-        mp_table = self.melodic_peaks()
+    # Iterate through consecutive note pairs
+    for i in range(len(df) - 1):
+        current = df.iloc[i]
+        next_note = df.iloc[i + 1]
 
-        # Generate transition matrices for pitches and note durations
-        pitch_tm, duration_tm = self.transition_matrix()
+        # Skip pairs involving rests
+        if current['pitch_name'] == '*' or next_note['pitch_name'] == '*':
+            continue
 
-        # Generate table and transition matrix for all intervals
-        int_table, int_tm = self.intervals()
+        # Calculate interval in semitones (including microtones)
+        interval = next_note['pitch_code'] - current['pitch_code']
+        intervals.append(round(interval, 2))  # Round to handle floating point precision
 
-        # Store all analysis results in the dictionary
-        results_dict["pitch_table"] = pitch_table
-        results_dict["if_table"] = if_table
-        results_dict["mp_table"] = mp_table
-        results_dict["pitch_tm"] = pitch_tm
-        results_dict["duration_tm"] = duration_tm
-        results_dict["int_table"] = int_table
-        results_dict["int_tm"] = int_tm
+    # Create count dataframe
+    interval_counts = pd.Series(intervals).value_counts().reset_index()
+    interval_counts.columns = ['interval', 'occurrence']
 
-        return results_dict
+    # Sort by occurrence then by interval
+    interval_counts = interval_counts.sort_values(
+        ['occurrence', 'interval'],
+        ascending=[False, False]
+    ).reset_index(drop=True)
+
+    return interval_counts
+
+
+def interval_transition_matrix(df):
+    # First compute intervals between consecutive notes
+    intervals = []
+    for i in range(len(df) - 1):
+        current = df.iloc[i]
+        next_note = df.iloc[i + 1]
+
+        # Skip pairs involving rests
+        if current['pitch_name'] == '*' or next_note['pitch_name'] == '*':
+            continue
+
+        # Calculate interval with microtonal precision
+        interval = round(next_note['pitch_code'] - current['pitch_code'], 2)
+        intervals.append(interval)
+
+    if len(intervals) < 2:
+        return pd.DataFrame()
+
+    # Create transition pairs
+    from_intervals = intervals[:-1]
+    to_intervals = intervals[1:]
+
+    # Get all unique intervals in sorted order
+    unique_intervals = sorted(list(set(intervals)))
+
+    # Create categorical matrix
+    matrix = pd.crosstab(
+        pd.Categorical(from_intervals, categories=unique_intervals, ordered=True),
+        pd.Categorical(to_intervals, categories=unique_intervals, ordered=True),
+        dropna=False
+    )
+
+    matrix.index.name = "de"
+    matrix.columns.name = "vers"
+
+    return matrix
+
+def get_analysis(midi_file):
+    results_dict = {
+        "pitch_table": "",
+        "if_table": "",
+        "mp_table": "",
+        "pitch_tm": "",
+        "duration_tm": "",
+        "int_table": "",
+        "int_tm": "",
+    }
+
+    midi_df = parse_midi_file(midi_file)
+
+    results_dict["pitch_table"] = pitch_statistics(midi_df).to_json(orient="split")
+    results_dict["if_table"] = internal_finals(midi_df).to_json(orient="split")
+    results_dict["mp_table"] = melodic_peaks(midi_df).to_json(orient="split")
+    results_dict["pitch_tm"] = pitch_transition_matrix(midi_df).to_json(orient="split")
+    results_dict["duration_tm"] = duration_transition_matrix(midi_df).to_json(orient="split")
+    results_dict["int_table"] = intervals_statistics(midi_df).to_json(orient="split")
+    results_dict["int_tm"] = interval_transition_matrix(midi_df).to_json(orient="split")
+
+    return results_dict
 
 
 
@@ -696,6 +486,7 @@ async def analyze_midi(
 
     Raises:
         HTTPException: If file processing fails
+        :param file: 
     """
     try:
         # Validate file type
@@ -707,8 +498,7 @@ async def analyze_midi(
         midi_received = BytesIO(file_content)
 
         # Run analysis
-        analyzer_instance = Analyzer(midi_received, 'FR')
-        analysis_result = analyzer_instance.analyzer()
+        analysis_result = get_analysis(midi_received)
 
         return JSONResponse(
             content=analysis_result,
