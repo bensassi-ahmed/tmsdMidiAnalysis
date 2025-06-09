@@ -450,7 +450,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://midi-harmony-explorer.lovable.app"],
+    allow_origins=["https://midi-harmony-explorer.lovable.app", "https://tmsd.tn"],
     allow_credentials=True,
     allow_methods=["POST"],
     allow_headers=["*"],
